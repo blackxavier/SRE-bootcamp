@@ -1,0 +1,45 @@
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python virtual environments
+.venv/
+venv/
+ENV/
+
+# Local DB and state
+*.sqlite3
+postgres_data/
+
+# Python packaging
+*.egg-info/
+.dist/
+build/
+
+# VCS
+.git/
+.gitignore
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Docker
+Dockerfile*
+.dockerignore
+
+# Env files (do not bake secrets into images)
+.env
+.env.*
+
+# Test / coverage artifacts
+htmlcov/
+.tox/
+.nox/
+.coverage*
+pytest-cache/
+
+# Static collection output (will be generated in container)
+staticfiles/

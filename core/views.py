@@ -7,7 +7,7 @@ from .serializers import StudentSerializer
 
 
 @api_view(['GET'])
-def health_check(request):
+def health_check(request,version=None,*args, **kwargs):
     """Health check endpoint for monitoring."""
     health_status = {
         "status": "healthy",
