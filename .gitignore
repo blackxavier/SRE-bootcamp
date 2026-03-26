@@ -45,4 +45,3 @@ htmlcov/
 .coverage.*
 .cache
 *.cover
-db.sqlite3
