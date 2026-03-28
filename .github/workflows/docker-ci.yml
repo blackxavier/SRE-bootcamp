@@ -14,6 +14,9 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
 
+    outputs:
+      image-tag: ${{ steps.vars.outputs.image-tag }}
+
     permissions:
       contents: read
       packages: write   # needed for GHCR
@@ -47,6 +50,7 @@ jobs:
             TAG="dev-${GITHUB_SHA::7}"
           fi
           echo "IMAGE_TAG=${TAG}" >> "$GITHUB_ENV"
+          echo "image-tag=${TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Build Docker image
         run: |
@@ -62,3 +66,46 @@ jobs:
       - name: Push image to GHCR
         run: |
           docker push ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Copy compose and nginx config to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          source: "docker-compose.prod.yml,nginx.conf"
+          target: "/srv/sre-bootcamp"
+
+      - name: Deploy on EC2 via Docker Compose
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -e
+            cd /srv/sre-bootcamp
+            # Recreate .env.prod from GitHub Secrets (not stored in git)
+            cat > .env.prod << 'EOF'
+            DJANGO_SECRET_KEY=${{ secrets.DJANGO_SECRET_KEY }}
+            DEBUG=False
+            DB_NAME=${{ secrets.DB_NAME }}
+            DB_USER=${{ secrets.DB_USER }}
+            DB_PASSWORD=${{ secrets.DB_PASSWORD }}
+            ALLOWED_HOSTS=${{ secrets.ALLOWED_HOSTS }}
+            EOF
+
+            IMAGE_TAG="${{ needs.build-and-push.outputs.image-tag }}"
+            WEB_IMAGE="docker.io/${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}"
+            echo "WEB_IMAGE=${WEB_IMAGE}" > .image.env
+            docker compose --env-file .env.prod --env-file .image.env -f docker-compose.prod.yml pull
+            docker compose --env-file .env.prod --env-file .image.env -f docker-compose.prod.yml up -d
