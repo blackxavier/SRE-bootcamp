@@ -45,3 +45,5 @@ htmlcov/
 .coverage.*
 .cache
 *.cover
+learn.md
+
