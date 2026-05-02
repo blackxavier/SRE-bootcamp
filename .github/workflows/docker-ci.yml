@@ -11,7 +11,50 @@ env:
   IMAGE_NAME: sre-bootcamp-web
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: test_sre_bootcamp
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run Django tests
+        env:
+          DB_NAME: test_sre_bootcamp
+          DB_USER: postgres
+          DB_PASSWORD: postgres
+          DB_HOST: localhost
+          DB_PORT: "5432"
+        run: uv run python manage.py test
+
   build-and-push:
+    needs: test
     runs-on: ubuntu-latest
 
     outputs:
@@ -82,7 +125,7 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          source: "docker-compose.prod.yml,nginx.conf"
+          source: "docker-compose.yml,nginx.conf"
           target: "/srv/sre-bootcamp"
 
       - name: Deploy on EC2 via Docker Compose
@@ -94,10 +137,14 @@ jobs:
           script: |
             set -e
             cd /srv/sre-bootcamp
+
+            # Authenticate so private Docker Hub images can be pulled
+            echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login docker.io \
+              -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
             # Recreate .env.prod from GitHub Secrets (not stored in git)
-            cat > .env.prod << 'EOF'
+            cat > .env << 'EOF'
             DJANGO_SECRET_KEY=${{ secrets.DJANGO_SECRET_KEY }}
-            DEBUG=False
             DB_NAME=${{ secrets.DB_NAME }}
             DB_USER=${{ secrets.DB_USER }}
             DB_PASSWORD=${{ secrets.DB_PASSWORD }}
@@ -107,5 +154,9 @@ jobs:
             IMAGE_TAG="${{ needs.build-and-push.outputs.image-tag }}"
             WEB_IMAGE="docker.io/${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}"
             echo "WEB_IMAGE=${WEB_IMAGE}" > .image.env
-            docker compose --env-file .env.prod --env-file .image.env -f docker-compose.prod.yml pull
-            docker compose --env-file .env.prod --env-file .image.env -f docker-compose.prod.yml up -d
+
+            docker compose --env-file .env --env-file .image.env -f docker-compose.yml pull
+            docker compose --env-file .env --env-file .image.env -f docker-compose.yml up -d --remove-orphans
+
+            # Prune images that are no longer referenced by any container
+            docker image prune -f

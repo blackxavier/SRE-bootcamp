@@ -1,21 +1,19 @@
-version: "3.9"
-
 services:
   web:
-    build: .
-    image: sre-bootcamp-web:1.0
+    image: ${WEB_IMAGE:-ghcr.io/blackxavier/sre-bootcamp-web:latest}
     environment:
-      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-changeme}
-      DEBUG: ${DEBUG:-False}
-      DB_NAME: ${DB_NAME:-sre_bootcamp}
-      DB_USER: ${DB_USER:-postgres}
-      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY}
+      DEBUG: "False"
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
       DB_HOST: db
       DB_PORT: "5432"
-      ALLOWED_HOSTS: "*"
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS}
       PORT: "8000"
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     expose:
       - "8000"
     volumes:
@@ -26,9 +24,15 @@ services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: ${DB_NAME:-sre_bootcamp}
-      POSTGRES_USER: ${DB_USER:-postgres}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
@@ -37,7 +41,8 @@ services:
   nginx:
     image: nginx:alpine
     depends_on:
-      - web
+      web:
+        condition: service_started
     ports:
       - "80:80"
     volumes:

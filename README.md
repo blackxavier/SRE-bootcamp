@@ -5,83 +5,60 @@ A simple Django REST Framework API for managing student records.
 ## Tech Stack
 
 - Python 3.13+
+- uv
 - Django 6.0
 - Django REST Framework
-- SQLite (development)
-- uv (package manager)
+- python-decouple
+- PostgreSQL
+- Docker Compose
 
-## Quick Start (Local with uv)
+## Deployment Model
 
-```sh
-# Clone the repository
-git clone https://github.com/yourusername/SRE-Bootcamp.git
-cd SRE-Bootcamp
+This repository is intended to run as a Docker Compose stack on an EC2-based
+development server.
 
-# Install dependencies
-uv sync
-
-# Run migrations
-uv run python manage.py migrate
-
-# Start development server
-uv run python manage.py runserver
-```
-
-## Running with Docker
-
-This project ships with a multi-stage Dockerfile and a Makefile for convenience.
-
-### Build the image
-
-Use a **semantic version** tag (no `latest`):
-
-```sh
-make build VERSION=0.1.0
-```
-
-This builds an image named `sre-bootcamp-student-api:0.1.0`.
-
-### Run the container
-
-Inject configuration via environment variables at runtime:
-
-```sh
-make run VERSION=0.1.0
-```
-
-This is equivalent to:
-
-```sh
-docker run --rm -p 8000:8000 \
-  -e DJANGO_SECRET_KEY="changeme" \
-  -e DEBUG="False" \
-  -e DB_NAME="sre_bootcamp" \
-  -e DB_USER="postgres" \
-  -e DB_PASSWORD="postgres" \
-  -e DB_HOST="localhost" \
-  -e DB_PORT="5432" \
-  sre-bootcamp-student-api:0.1.0
-```
-
-Once running, the API is available at:
-
-- `http://localhost:8000/api/v1/students/`
-- `http://localhost:8000/api/v1/health/`
-
-## Running with Docker Compose (nginx + Postgres)
-
-For a more production-like setup, this project includes a `docker-compose.yml`
-that runs multiple services:
+The deployment topology is:
 
 - `web`: Django app served by Gunicorn
 - `db`: PostgreSQL database
-- `nginx`: reverse proxy in front of Gunicorn and static files server
-- `dozzle`: lightweight web UI for viewing Docker container logs
+- `nginx`: reverse proxy in front of Gunicorn and static files
+- `dozzle`: live container log viewer
+
+The single source of truth for orchestration is `docker-compose.yml`.
+
+## Deploying on EC2
+
+The GitHub Actions workflow builds and publishes the application image, then the
+EC2 host pulls that image and starts the stack with Docker Compose.
+
+Project dependencies are managed with `uv`, and Django settings read
+configuration through `python-decouple` from the environment or `.env`-style
+files.
+
+### Required environment variables
+
+Provide these values on the EC2 host through `.env.prod` or your deployment
+automation:
+
+- `DJANGO_SECRET_KEY`
+- `DEBUG`
+- `DB_NAME`
+- `DB_USER`
+- `DB_PASSWORD`
+- `DB_HOST`
+- `DB_PORT`
+- `ALLOWED_HOSTS`
+- `WEB_IMAGE`
+
+Use `.env.example` as the starting template for these values.
+
+`WEB_IMAGE` should point at the published container image tag that EC2 should
+run, for example `docker.io/<user>/sre-bootcamp-web:dev-abc1234`.
 
 ### Start the stack
 
 ```sh
-docker compose up --build
+docker compose --env-file .env.prod --env-file .image.env up -d
 ```
 
 Or via Makefile:
@@ -90,53 +67,37 @@ Or via Makefile:
 make compose-up
 ```
 
-The API will be available at:
-
-- `http://localhost/api/v1/students/`
-- `http://localhost/api/v1/health/`
-
-### Environment configuration
-
-You can override defaults using a `.env` file or shell env vars. Key variables:
-
-- `DJANGO_SECRET_KEY` – Django secret key
-- `DEBUG` – `True` or `False` (default: `False` in compose)
-- `DB_NAME`, `DB_USER`, `DB_PASSWORD` – database credentials
-
-`web` reads `DB_*` variables, and `db` uses the same values as `POSTGRES_*`
-so both containers share the same database configuration.
-
-For local development convenience, create a `.env` file (ignored by git) in
-the project root:
-
-```env
-DJANGO_SECRET_KEY=dev-secret-change-me
-DEBUG=True
-DB_NAME=sre_bootcamp
-DB_USER=postgres
-DB_PASSWORD=postgres
+```sh
+make compose-logs
 ```
 
-Docker Compose will load these values automatically and pass them to the
-containers.
+Once running on the EC2 host, the API is available at:
 
-### Viewing logs with Dozzle
+- `http://<ec2-host>/api/v1/students/`
+- `http://<ec2-host>/api/v1/health/`
 
-When running via docker-compose, Dozzle will be available at:
+Dozzle is exposed at:
 
-- `http://localhost:8080`
+- `http://<ec2-host>:8080`
 
-It provides a live, filterable view of all Docker container logs on your
-machine (requires access to the Docker socket).
+## Why startup is reliable now
+
+The web container runs database migrations during startup. Previously, Compose
+only guaranteed that the Postgres container process had been started, not that
+Postgres was ready to accept connections.
+
+`docker-compose.yml` now adds a PostgreSQL healthcheck using `pg_isready`, and
+the `web` service waits on `db` with `condition: service_healthy`. That means
+Gunicorn and migrations only start after Postgres is actually ready.
 
 ## API Endpoints
 
-Base URL: `http://localhost:8000/api/v1/`
+Base URL: `http://<ec2-host>/api/v1/`
 
 ### Students
 
 | Method | Endpoint | Description |
-|--------|----------|-------------|
+| ------ | -------- | ----------- |
 | GET | `/api/v1/students/` | List all students |
 | POST | `/api/v1/students/` | Create a new student |
 | GET | `/api/v1/students/{id}/` | Get student by ID |
@@ -147,7 +108,7 @@ Base URL: `http://localhost:8000/api/v1/`
 ### Health Check
 
 | Method | Endpoint | Description |
-|--------|----------|-------------|
+| ------ | -------- | ----------- |
 | GET | `/api/v1/health/` | Health check with DB status |
 
 ## Example Requests
@@ -155,7 +116,7 @@ Base URL: `http://localhost:8000/api/v1/`
 ### Create a Student
 
 ```sh
-curl -X POST http://localhost:8000/api/v1/students/ \
+curl -X POST http://<ec2-host>/api/v1/students/ \
   -H "Content-Type: application/json" \
   -d '{
     "first_name": "John",
@@ -168,16 +129,17 @@ curl -X POST http://localhost:8000/api/v1/students/ \
 ### Get All Students
 
 ```sh
-curl http://localhost:8000/api/v1/students/
+curl http://<ec2-host>/api/v1/students/
 ```
 
-### Health Check
+### Check Service Health
 
 ```sh
-curl http://localhost:8000/api/v1/health/
+curl http://<ec2-host>/api/v1/health/
 ```
 
 Response:
+
 ```json
 {
   "status": "healthy",
@@ -189,12 +151,13 @@ Response:
 ## Running Tests
 
 ```sh
+uv sync
 uv run python manage.py test
 ```
 
 ## Project Structure
 
-```
+```text
 SRE-Bootcamp/
 ├── config/             # Django project settings
 │   ├── settings.py
@@ -207,12 +170,12 @@ SRE-Bootcamp/
 │   ├── urls.py         # App URLs
 │   └── tests.py        # Unit tests
 ├── Dockerfile          # Multi-stage build for app image
-├── docker-compose.yml  # nginx + Gunicorn + Postgres stack
+├── docker-compose.yml  # EC2 deployment stack
 ├── nginx.conf          # Nginx reverse proxy and static config
 ├── entrypoint.sh       # Container entrypoint (migrate + collectstatic + Gunicorn)
 ├── manage.py
 ├── pyproject.toml      # Dependencies
-└── uv.lock             # Locked dependencies
+└── uv.lock             # Locked dependencies for image builds
 ```
 
 ## API Versioning
