@@ -13,6 +13,9 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
 
     services:
       postgres:
@@ -62,7 +65,7 @@ jobs:
           output: 'trivy-fs-results.sarif'
 
       - name: Upload Trivy filesystem results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: 'trivy-fs-results.sarif'
           category: 'trivy-fs'
@@ -136,7 +139,7 @@ jobs:
           output: 'trivy-image-results.sarif'
 
       - name: Upload Trivy image results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: 'trivy-image-results.sarif'
           category: 'trivy-image'
@@ -150,7 +153,7 @@ jobs:
           output: 'trivy-config-results.sarif'
 
       - name: Upload Trivy config results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: 'trivy-config-results.sarif'
           category: 'trivy-config'
