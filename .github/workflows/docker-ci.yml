@@ -51,7 +51,32 @@ jobs:
           DB_PASSWORD: postgres
           DB_HOST: localhost
           DB_PORT: "5432"
-        run: uv run python manage.py test
+        run: uv run python manage.py test --verbosity=2
+
+      - name: Trivy filesystem scan (code/config)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-fs-results.sarif'
+
+      - name: Upload Trivy filesystem results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-fs-results.sarif'
+          category: 'trivy-fs'
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            db.sqlite3
+            .coverage
+            htmlcov/
+          retention-days: 30
 
   build-and-push:
     needs: test
@@ -63,6 +88,7 @@ jobs:
     permissions:
       contents: read
       packages: write   # needed for GHCR
+      security-events: write  # needed for SARIF upload
 
     steps:
       - name: Checkout repository
@@ -101,6 +127,33 @@ jobs:
             -t docker.io/${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG} \
             -t ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG} \
             .
+
+      - name: Trivy image scan (app image)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'docker.io/${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}'
+          format: 'sarif'
+          output: 'trivy-image-results.sarif'
+
+      - name: Upload Trivy image results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-image-results.sarif'
+          category: 'trivy-image'
+
+      - name: Trivy config scan (dependencies)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-config-results.sarif'
+
+      - name: Upload Trivy config results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-config-results.sarif'
+          category: 'trivy-config'
 
       - name: Push image to Docker Hub
         run: |
