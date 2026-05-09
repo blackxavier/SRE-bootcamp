@@ -151,9 +151,9 @@ jobs:
       - name: Prepare deploy directory on EC2
         uses: appleboy/ssh-action@v0.1.10
         with:
-          host: ${{ secrets.EC2_k8s_HOST }}
-          username: ${{ secrets.EC2_k8s_USER }}
-          key: ${{ secrets.EC2_k8s_SSH_KEY }}
+          host: ${{ secrets.EC2_K8S_HOST }}
+          username: ${{ secrets.EC2_K8S_USER }}
+          key: ${{ secrets.EC2_K8S_SSH_KEY }}
           script: |
             set -e
             DEPLOY_DIR="/srv/sre-bootcamp-k8s"
@@ -167,51 +167,51 @@ jobs:
       - name: Copy Kubernetes manifests to EC2
         uses: appleboy/scp-action@v0.1.7
         with:
-          host: ${{ secrets.EC2_k8s_HOST }}
-          username: ${{ secrets.EC2_k8s_USER }}
-          key: ${{ secrets.EC2_k8s_SSH_KEY }}
+          host: ${{ secrets.EC2_K8S_HOST }}
+          username: ${{ secrets.EC2_K8S_USER }}
+          key: ${{ secrets.EC2_K8S_SSH_KEY }}
           source: "k8s/*"
           target: "/srv/sre-bootcamp-k8s"
 
       - name: Deploy to Minikube cluster on EC2
         uses: appleboy/ssh-action@v0.1.10
         with:
-          host: ${{ secrets.EC2_k8s_HOST }}
-          username: ${{ secrets.EC2_k8s_USER }}
-          key: ${{ secrets.EC2_k8s_SSH_KEY }}
+          host: ${{ secrets.EC2_K8S_HOST }}
+          username: ${{ secrets.EC2_K8S_USER }}
+          key: ${{ secrets.EC2_K8S_SSH_KEY }}
           script: |
             set -e
             cd /srv/sre-bootcamp-k8s
 
             # Validate kubectl connectivity to your Minikube cluster
-            kubectl cluster-info
+            minikube kubectl -- cluster-info
 
             # Apply namespace first
-            kubectl apply -f k8s/namespace.yml
+            minikube kubectl -- apply -f k8s/namespace.yml
 
             # Create or update DB credentials secret from GitHub Secrets
-            kubectl -n sre-bootcamp create secret generic db-credentials \
+            minikube kubectl -- -n sre-bootcamp create secret generic db-credentials \
               --from-literal=DB_NAME='${{ secrets.DB_NAME }}' \
               --from-literal=DB_USER='${{ secrets.DB_USER }}' \
               --from-literal=DB_PASSWORD='${{ secrets.DB_PASSWORD }}' \
-              --dry-run=client -o yaml | kubectl apply -f -
+              --dry-run=client -o yaml | minikube kubectl -- apply -f -
 
             # Apply base manifests
-            kubectl apply -f k8s/postgres.yaml
-            kubectl apply -f k8s/web-service.yaml
-            kubectl apply -f k8s/nginx-configmap.yaml
-            kubectl apply -f k8s/nginx-service.yaml
-            kubectl apply -f k8s/web-deployment.yaml
-            kubectl apply -f k8s/nginx-deployment.yaml
+            minikube kubectl -- apply -f k8s/postgres.yaml
+            minikube kubectl -- apply -f k8s/web-service.yaml
+            minikube kubectl -- apply -f k8s/nginx-configmap.yaml
+            minikube kubectl -- apply -f k8s/nginx-service.yaml
+            minikube kubectl -- apply -f k8s/web-deployment.yaml
+            minikube kubectl -- apply -f k8s/nginx-deployment.yaml
 
             # Update web image to the freshly built tag
             IMAGE_TAG="${{ needs.build-and-push.outputs.image-tag }}"
             WEB_IMAGE="ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}"
-            kubectl -n sre-bootcamp set image deployment/sre-bootcamp-web web="${WEB_IMAGE}"
+            minikube kubectl -- -n sre-bootcamp set image deployment/sre-bootcamp-web web="${WEB_IMAGE}"
 
             # Ensure pods are healthy before marking deployment done
-            kubectl -n sre-bootcamp rollout status deployment/sre-bootcamp-web --timeout=300s
+            minikube kubectl -- -n sre-bootcamp rollout status deployment/sre-bootcamp-web --timeout=300s
 
             # Restart nginx so configmap changes are picked up
-            kubectl -n sre-bootcamp rollout restart deployment/nginx
-            kubectl -n sre-bootcamp rollout status deployment/nginx --timeout=180s
+            minikube kubectl -- -n sre-bootcamp rollout restart deployment/nginx
+            minikube kubectl -- -n sre-bootcamp rollout status deployment/nginx --timeout=180s
