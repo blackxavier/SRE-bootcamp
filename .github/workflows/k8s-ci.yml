@@ -1,0 +1,217 @@
+name: CI - Build and Deploy to Kubernetes
+
+on:
+  push:
+    branches:
+      - kubernetes
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: sre-bootcamp-web
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: test_sre_bootcamp
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run Django tests
+        env:
+          DB_NAME: test_sre_bootcamp
+          DB_USER: postgres
+          DB_PASSWORD: postgres
+          DB_HOST: localhost
+          DB_PORT: "5432"
+        run: uv run python manage.py test --verbosity=2
+
+      - name: Trivy filesystem scan (code/config)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-fs-results.sarif'
+
+      - name: Upload Trivy filesystem results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: 'trivy-fs-results.sarif'
+          category: 'trivy-fs'
+
+  build-and-push:
+    needs: test
+    runs-on: ubuntu-latest
+
+    outputs:
+      image-tag: ${{ steps.vars.outputs.image-tag }}
+
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tag
+        id: vars
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF##refs/tags/}"
+          else
+            TAG="dev-${GITHUB_SHA::7}"
+          fi
+          echo "IMAGE_TAG=${TAG}" >> "$GITHUB_ENV"
+          echo "image-tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            -t docker.io/${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG} \
+            -t ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG} \
+            .
+
+      - name: Trivy image scan (app image)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'docker.io/${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.image-tag }}'
+          format: 'sarif'
+          output: 'trivy-image-results.sarif'
+
+      - name: Upload Trivy image results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: 'trivy-image-results.sarif'
+          category: 'trivy-image'
+
+      - name: Push image to Docker Hub
+        run: docker push docker.io/${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}
+
+      - name: Push image to GHCR
+        run: docker push ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}
+
+  deploy-k8s:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/kubernetes'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare deploy directory on EC2
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.EC2_k8s_HOST }}
+          username: ${{ secrets.EC2_k8s_USER }}
+          key: ${{ secrets.EC2_k8s_SSH_KEY }}
+          script: |
+            set -e
+            DEPLOY_DIR="/srv/sre-bootcamp-k8s"
+            if mkdir -p "${DEPLOY_DIR}" 2>/dev/null; then
+              true
+            else
+              sudo mkdir -p "${DEPLOY_DIR}"
+              sudo chown "${USER}:${USER}" "${DEPLOY_DIR}"
+            fi
+
+      - name: Copy Kubernetes manifests to EC2
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_k8s_HOST }}
+          username: ${{ secrets.EC2_k8s_USER }}
+          key: ${{ secrets.EC2_k8s_SSH_KEY }}
+          source: "k8s/*"
+          target: "/srv/sre-bootcamp-k8s"
+
+      - name: Deploy to Minikube cluster on EC2
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.EC2_k8s_HOST }}
+          username: ${{ secrets.EC2_k8s_USER }}
+          key: ${{ secrets.EC2_k8s_SSH_KEY }}
+          script: |
+            set -e
+            cd /srv/sre-bootcamp-k8s
+
+            # Validate kubectl connectivity to your Minikube cluster
+            kubectl cluster-info
+
+            # Apply namespace first
+            kubectl apply -f k8s/namespace.yml
+
+            # Create or update DB credentials secret from GitHub Secrets
+            kubectl -n sre-bootcamp create secret generic db-credentials \
+              --from-literal=DB_NAME='${{ secrets.DB_NAME }}' \
+              --from-literal=DB_USER='${{ secrets.DB_USER }}' \
+              --from-literal=DB_PASSWORD='${{ secrets.DB_PASSWORD }}' \
+              --dry-run=client -o yaml | kubectl apply -f -
+
+            # Apply base manifests
+            kubectl apply -f k8s/postgres.yaml
+            kubectl apply -f k8s/web-service.yaml
+            kubectl apply -f k8s/nginx-configmap.yaml
+            kubectl apply -f k8s/nginx-service.yaml
+            kubectl apply -f k8s/web-deployment.yaml
+            kubectl apply -f k8s/nginx-deployment.yaml
+
+            # Update web image to the freshly built tag
+            IMAGE_TAG="${{ needs.build-and-push.outputs.image-tag }}"
+            WEB_IMAGE="ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}"
+            kubectl -n sre-bootcamp set image deployment/sre-bootcamp-web web="${WEB_IMAGE}"
+
+            # Ensure pods are healthy before marking deployment done
+            kubectl -n sre-bootcamp rollout status deployment/sre-bootcamp-web --timeout=300s
+
+            # Restart nginx so configmap changes are picked up
+            kubectl -n sre-bootcamp rollout restart deployment/nginx
+            kubectl -n sre-bootcamp rollout status deployment/nginx --timeout=180s
