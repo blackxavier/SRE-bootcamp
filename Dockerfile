@@ -53,6 +53,9 @@ COPY ./entrypoint.sh ./entrypoint.sh
 
 RUN chmod +x ./entrypoint.sh
 
+# Collect static files at build time (WhiteNoise will serve them)
+RUN python manage.py collectstatic --noinput
+
 # Expose the application port
 EXPOSE ${PORT}
 

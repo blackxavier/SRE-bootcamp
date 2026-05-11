@@ -7,7 +7,7 @@ set -e
 echo "[entrypoint] Applying database migrations..."
 python manage.py migrate --noinput
 
-echo "[entrypoint] Collecting static files..."
+echo "[entrypoint] Collecting static files (if needed)..."
 python manage.py collectstatic --noinput
 
 echo "[entrypoint] Starting Gunicorn on port ${PORT}..."
