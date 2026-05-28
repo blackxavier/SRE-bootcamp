@@ -47,3 +47,6 @@ htmlcov/
 *.cover
 learn.md
 HELM.md
+server-setup.md
+helm.md
+
