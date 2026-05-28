@@ -3,9 +3,7 @@ name: CI - Build and Push Images
 on:
   push:
     branches:
-      - main
-    tags:
-      - 'v*'
+      - docker
 
 env:
   IMAGE_NAME: sre-bootcamp-web

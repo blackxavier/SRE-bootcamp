@@ -3,8 +3,7 @@ name: CI - Build and Deploy to Kubernetes
 on:
   push:
     branches:
-      - kubernetes
-      - helm-setup
+      - dev
     tags:
       - 'v*'
   workflow_dispatch:
