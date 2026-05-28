@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: nginx
+    {{- include "sre-bootcamp.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.nginx.replicas }}
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+        - name: nginx
+          image: "{{ .Values.nginx.image.repository }}:{{ .Values.nginx.image.tag }}"
+          imagePullPolicy: {{ .Values.nginx.image.pullPolicy }}
+          ports:
+            - containerPort: 80
+              name: http
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: default.conf
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.nginx.readinessProbe.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.nginx.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.nginx.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.nginx.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.nginx.readinessProbe.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.nginx.livenessProbe.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.nginx.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.nginx.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.nginx.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.nginx.livenessProbe.failureThreshold }}
+      volumes:
+        - name: nginx-config
+          configMap:
+            name: nginx-config

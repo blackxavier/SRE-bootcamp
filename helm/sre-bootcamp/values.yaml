@@ -1,0 +1,90 @@
+# -------------------------------------------------------
+# Global
+# -------------------------------------------------------
+namespace: sre-bootcamp
+
+# -------------------------------------------------------
+# Web (Django + Gunicorn)
+# -------------------------------------------------------
+web:
+  image:
+    repository: ghcr.io/blackxavier/sre-bootcamp-web
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicas: 1
+  port: 8000
+  env:
+    debug: "False"
+    allowedHosts: "*"
+    dbHost: db
+    dbPort: "5432"
+  # Name of the pre-existing Kubernetes Secret holding DB credentials.
+  # The secret must contain keys: DB_NAME, DB_USER, DB_PASSWORD.
+  # Created by the CI pipeline before helm upgrade --install.
+  existingSecret: db-credentials
+  readinessProbe:
+    path: /api/v1/health/
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+  livenessProbe:
+    path: /api/v1/health/
+    initialDelaySeconds: 20
+    periodSeconds: 20
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+# -------------------------------------------------------
+# Postgres
+# -------------------------------------------------------
+postgres:
+  image:
+    repository: postgres
+    tag: 16-alpine
+    pullPolicy: IfNotPresent
+  # Name of the pre-existing Kubernetes Secret holding DB credentials.
+  # Same secret as web.existingSecret.
+  existingSecret: db-credentials
+  storage:
+    # emptyDir = ephemeral. pvc = persistent (PersistentVolumeClaim).
+    type: pvc
+    pvc:
+      storageClass: standard
+      size: 1Gi
+  readinessProbe:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
+  livenessProbe:
+    initialDelaySeconds: 20
+    periodSeconds: 20
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+# -------------------------------------------------------
+# Nginx
+# -------------------------------------------------------
+nginx:
+  image:
+    repository: nginx
+    tag: alpine
+    pullPolicy: IfNotPresent
+  replicas: 1
+  service:
+    type: NodePort
+    port: 80
+    nodePort: 30080
+  readinessProbe:
+    path: /api/v1/health/
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+  livenessProbe:
+    path: /api/v1/health/
+    initialDelaySeconds: 10
+    periodSeconds: 20
+    timeoutSeconds: 3
+    failureThreshold: 3
