@@ -122,6 +122,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log in to Docker Hub (Optional)
+        id: dockerhub-login
+        continue-on-error: true
         if: env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
         uses: docker/login-action@v3
         with:
@@ -132,7 +134,7 @@ jobs:
       - name: Build Docker image
         run: |
           TAGS="-t ghcr.io/${OWNER_LC}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}"
-          if [[ -n "${DOCKERHUB_USERNAME}" ]]; then
+          if [[ "${{ steps.dockerhub-login.outcome }}" == "success" ]]; then
             TAGS="${TAGS} -t docker.io/${DOCKERHUB_USERNAME}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}"
           fi
           docker build ${TAGS} .
@@ -154,7 +156,7 @@ jobs:
         run: docker push ghcr.io/${OWNER_LC}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}
 
       - name: Push image to Docker Hub (Optional)
-        if: env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
+        if: steps.dockerhub-login.outcome == 'success'
         run: docker push docker.io/${{ env.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}
 
   deploy-k8s:
