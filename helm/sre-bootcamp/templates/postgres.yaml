@@ -1,5 +1,5 @@
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: db
   namespace: {{ .Values.namespace }}
@@ -7,6 +7,7 @@ metadata:
     app: db
     {{- include "sre-bootcamp.labels" . | nindent 4 }}
 spec:
+  serviceName: db
   replicas: 1
   selector:
     matchLabels:
@@ -62,33 +63,27 @@ spec:
             periodSeconds: {{ .Values.postgres.livenessProbe.periodSeconds }}
             timeoutSeconds: {{ .Values.postgres.livenessProbe.timeoutSeconds }}
             failureThreshold: {{ .Values.postgres.livenessProbe.failureThreshold }}
+      {{- if ne .Values.postgres.storage.type "pvc" }}
       volumes:
         - name: postgres-data
-          {{- if eq .Values.postgres.storage.type "pvc" }}
-          persistentVolumeClaim:
-            claimName: postgres-pvc
-          {{- else }}
           emptyDir: {}
-          {{- end }}
+      {{- end }}
+  {{- if eq .Values.postgres.storage.type "pvc" }}
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-data
+        labels:
+          app: db
+          {{- include "sre-bootcamp.labels" . | nindent 10 }}
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: {{ .Values.postgres.storage.pvc.storageClass }}
+        resources:
+          requests:
+            storage: {{ .Values.postgres.storage.pvc.size }}
+  {{- end }}
 ---
-{{- if eq .Values.postgres.storage.type "pvc" }}
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: postgres-pvc
-  namespace: {{ .Values.namespace }}
-  labels:
-    app: db
-    {{- include "sre-bootcamp.labels" . | nindent 4 }}
-spec:
-  accessModes:
-    - ReadWriteOnce
-  storageClassName: {{ .Values.postgres.storage.pvc.storageClass }}
-  resources:
-    requests:
-      storage: {{ .Values.postgres.storage.pvc.size }}
----
-{{- end }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -98,7 +93,7 @@ metadata:
     app: db
     {{- include "sre-bootcamp.labels" . | nindent 4 }}
 spec:
-  type: ClusterIP
+  clusterIP: None
   selector:
     app: db
   ports:

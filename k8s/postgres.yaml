@@ -1,11 +1,34 @@
-apiVersion: apps/v1
-kind: Deployment
+# -------------------------------------------------------------------------
+# Headless Service: Direct DNS routing for StatefulSet pods
+# -------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
 metadata:
   name: db
   namespace: sre-bootcamp
   labels:
     app: db
 spec:
+  clusterIP: None
+  selector:
+    app: db
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+# -------------------------------------------------------------------------
+# StatefulSet: PostgreSQL Database Workload with Dedicated PVC
+# -------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: db
+  namespace: sre-bootcamp
+  labels:
+    app: db
+spec:
+  serviceName: db
   replicas: 1
   selector:
     matchLabels:
@@ -61,22 +84,14 @@ spec:
             periodSeconds: 20
             timeoutSeconds: 5
             failureThreshold: 3
-      volumes:
-        - name: postgres-data
-          emptyDir: {}
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: db
-  namespace: sre-bootcamp
-  labels:
-    app: db
-spec:
-  type: ClusterIP
-  selector:
-    app: db
-  ports:
-    - name: postgres
-      port: 5432
-      targetPort: postgres
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-data
+        labels:
+          app: db
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 1Gi

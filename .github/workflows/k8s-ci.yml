@@ -241,7 +241,11 @@ jobs:
               -p '{"imagePullSecrets": [{"name": "ghcr-cred"}]}' 2>/dev/null || true
 
             # 5. Apply base workload and networking manifests
+            minikube addons enable default-storageclass -p sre-bootcamp 2>/dev/null || true
+            minikube addons enable storage-provisioner -p sre-bootcamp 2>/dev/null || true
+            minikube kubectl -- -n sre-bootcamp delete deployment db --ignore-not-found 2>/dev/null || true
             minikube kubectl -- apply -f k8s/postgres.yaml
+            minikube kubectl -- -n sre-bootcamp rollout status statefulset/db --timeout=180s
             minikube kubectl -- apply -f k8s/web-service.yaml
             minikube kubectl -- apply -f k8s/nginx-configmap.yaml
             minikube kubectl -- apply -f k8s/nginx-service.yaml
@@ -260,5 +264,6 @@ jobs:
             minikube kubectl -- -n sre-bootcamp rollout restart deployment/nginx
             minikube kubectl -- -n sre-bootcamp rollout status deployment/nginx --timeout=180s
 
-            # 9. Print running workloads
+            # 9. Print running workloads and storage
             minikube kubectl -- -n sre-bootcamp get pods -o wide
+            minikube kubectl -- -n sre-bootcamp get pvc
