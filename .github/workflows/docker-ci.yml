@@ -1,11 +1,8 @@
-name: CI - Build and Push Images
+name: CI - Build and Push Images (Deprecated - Docker Compose)
 
+# Retired in favor of pure Kubernetes pipeline (.github/workflows/k8s-ci.yml)
 on:
-  push:
-    branches:
-      - main
-    tags:
-      - 'v*'
+  workflow_dispatch:
 
 env:
   IMAGE_NAME: sre-bootcamp-web

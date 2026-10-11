@@ -11,6 +11,7 @@ services:
       DB_PORT: "5432"
       ALLOWED_HOSTS: ${ALLOWED_HOSTS}
       PORT: "8000"
+      RUN_MIGRATIONS: "true"
     depends_on:
       db:
         condition: service_healthy

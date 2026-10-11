@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sre-bootcamp-web
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: sre-bootcamp-web
+    {{- include "sre-bootcamp.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.web.replicas }}
+  selector:
+    matchLabels:
+      app: sre-bootcamp-web
+  template:
+    metadata:
+      labels:
+        app: sre-bootcamp-web
+    spec:
+      containers:
+        - name: web
+          image: "{{ .Values.web.image.repository }}:{{ .Values.web.image.tag }}"
+          imagePullPolicy: {{ .Values.web.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.web.port }}
+              name: http
+          env:
+            - name: PORT
+              value: {{ .Values.web.port | quote }}
+            - name: DEBUG
+              value: {{ .Values.web.env.debug | quote }}
+            - name: ALLOWED_HOSTS
+              value: {{ .Values.web.env.allowedHosts | quote }}
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.web.existingSecret }}
+                  key: DB_NAME
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.web.existingSecret }}
+                  key: DB_USER
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.web.existingSecret }}
+                  key: DB_PASSWORD
+            - name: DB_HOST
+              value: {{ .Values.web.env.dbHost | quote }}
+            - name: DB_PORT
+              value: {{ .Values.web.env.dbPort | quote }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.web.readinessProbe.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.web.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.web.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.web.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.web.readinessProbe.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.web.livenessProbe.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.web.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.web.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.web.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.web.livenessProbe.failureThreshold }}
