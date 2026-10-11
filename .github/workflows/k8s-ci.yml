@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - dev
+      - k8s-deploy
     tags:
       - 'v*'
   workflow_dispatch:
@@ -76,33 +77,12 @@ jobs:
           sarif_file: 'trivy-fs-results.sarif'
           category: 'trivy-fs'
 
-  helm-validate:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Helm
-        uses: azure/setup-helm@v4
-        with:
-          version: latest
-
-      - name: Helm lint
-        run: helm lint helm/sre-bootcamp
-
-      - name: Helm template (dry-run render)
-        run: |
-          helm template sre-bootcamp helm/sre-bootcamp \
-            --set web.image.tag=ci-test \
-            --debug
-
   build-and-push:
-    needs: [test, helm-validate]
+    needs: test
     runs-on: ubuntu-latest
 
     outputs:
       image-tag: ${{ steps.vars.outputs.image-tag }}
-      chart-version: ${{ steps.vars.outputs.chart-version }}
       owner-lc: ${{ steps.vars.outputs.owner-lc }}
 
     permissions:
@@ -130,11 +110,6 @@ jobs:
           fi
           echo "IMAGE_TAG=${TAG}" >> "$GITHUB_ENV"
           echo "image-tag=${TAG}" >> "$GITHUB_OUTPUT"
-
-          # Extract chart version from Chart.yaml
-          CHART_VER=$(grep '^version:' helm/sre-bootcamp/Chart.yaml | awk '{print $2}' | tr -d '"'\''')
-          echo "CHART_VERSION=${CHART_VER}" >> "$GITHUB_ENV"
-          echo "chart-version=${CHART_VER}" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -179,30 +154,20 @@ jobs:
         if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
         run: docker push docker.io/${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}
 
-      - name: Set up Helm
-        uses: azure/setup-helm@v4
-        with:
-          version: latest
-
-      - name: Package and push Helm chart to GHCR
-        run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io \
-            --username ${{ github.actor }} \
-            --password-stdin
-          helm package helm/sre-bootcamp
-          helm push sre-bootcamp-${CHART_VERSION}.tgz oci://ghcr.io/${OWNER_LC}/charts
-
   deploy-k8s:
     needs: build-and-push
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/k8s-deploy' || github.event_name == 'workflow_dispatch'
 
     permissions:
       contents: read
       packages: read
 
     steps:
-      - name: Deploy to Minikube cluster on EC2 via Helm
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare deploy directory on EC2
         uses: appleboy/ssh-action@v0.1.10
         with:
           host: ${{ secrets.EC2_K8S_HOST }}
@@ -210,10 +175,36 @@ jobs:
           key: ${{ secrets.EC2_K8S_SSH_KEY }}
           script: |
             set -e
+            DEPLOY_DIR="/srv/sre-bootcamp-k8s"
+            if mkdir -p "${DEPLOY_DIR}" 2>/dev/null; then
+              true
+            else
+              sudo mkdir -p "${DEPLOY_DIR}"
+              sudo chown "${USER}:${USER}" "${DEPLOY_DIR}"
+            fi
+
+      - name: Copy Kubernetes manifests to EC2
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_K8S_HOST }}
+          username: ${{ secrets.EC2_K8S_USER }}
+          key: ${{ secrets.EC2_K8S_SSH_KEY }}
+          source: "k8s/*"
+          target: "/srv/sre-bootcamp-k8s"
+
+      - name: Deploy to Minikube cluster on EC2
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.EC2_K8S_HOST }}
+          username: ${{ secrets.EC2_K8S_USER }}
+          key: ${{ secrets.EC2_K8S_SSH_KEY }}
+          script: |
+            set -e
+            cd /srv/sre-bootcamp-k8s
 
             OWNER_LC="${{ needs.build-and-push.outputs.owner-lc }}"
             IMAGE_TAG="${{ needs.build-and-push.outputs.image-tag }}"
-            CHART_VERSION="${{ needs.build-and-push.outputs.chart-version }}"
+            WEB_IMAGE="ghcr.io/${OWNER_LC}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}"
 
             # Validate cluster connectivity via minikube
             minikube status -p sre-bootcamp || minikube status
@@ -222,27 +213,17 @@ jobs:
             minikube update-context -p sre-bootcamp 2>/dev/null || minikube update-context 2>/dev/null || true
             export KUBECONFIG="${HOME}/.kube/config"
 
-            # Install Helm on host if not already present
-            if ! command -v helm &>/dev/null; then
-              curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-            fi
+            # 1. Apply namespace first
+            minikube kubectl -- apply -f k8s/namespace.yml
 
-            # Ensure namespace exists before configuring secrets
-            minikube kubectl -- apply -f - <<'NSEOF'
-            apiVersion: v1
-            kind: Namespace
-            metadata:
-              name: sre-bootcamp
-            NSEOF
-
-            # Create or update DB credentials secret
+            # 2. Create or update DB credentials secret from GitHub Secrets
             minikube kubectl -- -n sre-bootcamp create secret generic db-credentials \
               --from-literal=DB_NAME='${{ secrets.DB_NAME }}' \
               --from-literal=DB_USER='${{ secrets.DB_USER }}' \
               --from-literal=DB_PASSWORD='${{ secrets.DB_PASSWORD }}' \
               --dry-run=client -o yaml | minikube kubectl -- apply -f -
 
-            # Create or update GHCR image pull secret to prevent ImagePullBackOff if repo is private
+            # 3. Create or update GHCR image pull secret
             minikube kubectl -- -n sre-bootcamp create secret docker-registry ghcr-cred \
               --docker-server=ghcr.io \
               --docker-username='${{ github.actor }}' \
@@ -250,26 +231,29 @@ jobs:
               --docker-email='bot@sre-bootcamp.local' \
               --dry-run=client -o yaml | minikube kubectl -- apply -f -
 
-            # Attach ghcr-cred to the default service account so all pods can pull images
+            # 4. Attach ghcr-cred to default serviceaccount so pods pull without imagePullSecrets blocks
             minikube kubectl -- -n sre-bootcamp patch serviceaccount default \
               -p '{"imagePullSecrets": [{"name": "ghcr-cred"}]}' 2>/dev/null || true
 
-            # Authenticate Helm with GHCR OCI registry
-            echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io \
-              --username ${{ github.actor }} \
-              --password-stdin
+            # 5. Apply base workload and networking manifests
+            minikube kubectl -- apply -f k8s/postgres.yaml
+            minikube kubectl -- apply -f k8s/web-service.yaml
+            minikube kubectl -- apply -f k8s/nginx-configmap.yaml
+            minikube kubectl -- apply -f k8s/nginx-service.yaml
+            minikube kubectl -- apply -f k8s/web-deployment.yaml
+            minikube kubectl -- apply -f k8s/nginx-deployment.yaml
 
-            # Deploy/Upgrade release via Helm OCI chart
-            helm upgrade --install sre-bootcamp \
-              oci://ghcr.io/${OWNER_LC}/charts/sre-bootcamp \
-              --version "${CHART_VERSION}" \
-              --namespace sre-bootcamp \
-              --set web.image.repository="ghcr.io/${OWNER_LC}/${{ env.IMAGE_NAME }}" \
-              --set web.image.tag="${IMAGE_TAG}" \
-              --wait \
-              --timeout=5m
+            # 6. Update web deployment image and migration initContainer image to the freshly built tag
+            minikube kubectl -- -n sre-bootcamp set image deployment/sre-bootcamp-web \
+              web="${WEB_IMAGE}" \
+              run-migrations="${WEB_IMAGE}"
 
-            # Post-deploy verification
-            minikube kubectl -- -n sre-bootcamp rollout status deployment/sre-bootcamp-web --timeout=120s
-            minikube kubectl -- -n sre-bootcamp rollout status deployment/nginx --timeout=120s
+            # 7. Wait for web deployment rollout to complete
+            minikube kubectl -- -n sre-bootcamp rollout status deployment/sre-bootcamp-web --timeout=300s
+
+            # 8. Reload nginx so any config changes are picked up
+            minikube kubectl -- -n sre-bootcamp rollout restart deployment/nginx
+            minikube kubectl -- -n sre-bootcamp rollout status deployment/nginx --timeout=180s
+
+            # 9. Print running workloads
             minikube kubectl -- -n sre-bootcamp get pods -o wide
