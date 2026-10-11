@@ -42,16 +42,27 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the virtual environment from the builder
-COPY --from=builder /app/.venv ./.venv
+# Create unprivileged system user and group (appuser:10001)
+RUN groupadd -g 10001 appgroup \
+    && useradd -u 10001 -g appgroup -s /bin/sh -d ${APP_HOME} appuser
 
-# Copy only the application source
-COPY --from=builder /app/config ./config
-COPY --from=builder /app/core ./core
-COPY --from=builder /app/manage.py ./manage.py
-COPY ./entrypoint.sh ./entrypoint.sh
+# Pre-create application directories and configure ownership
+RUN mkdir -p ${APP_HOME}/staticfiles \
+    && chown -R 10001:10001 ${APP_HOME}
+
+# Copy the virtual environment from builder with unprivileged ownership
+COPY --chown=10001:10001 --from=builder /app/.venv ./.venv
+
+# Copy only the application source with unprivileged ownership
+COPY --chown=10001:10001 --from=builder /app/config ./config
+COPY --chown=10001:10001 --from=builder /app/core ./core
+COPY --chown=10001:10001 --from=builder /app/manage.py ./manage.py
+COPY --chown=10001:10001 ./entrypoint.sh ./entrypoint.sh
 
 RUN chmod +x ./entrypoint.sh
+
+# Switch to unprivileged runtime user
+USER 10001:10001
 
 # Expose the application port
 EXPOSE ${PORT}

@@ -3,6 +3,7 @@ name: CI - Build and Deploy to Kubernetes
 on:
   push:
     branches:
+      - main
       - dev
     tags:
       - 'v*'
@@ -45,6 +46,9 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
 
       - name: Install dependencies
         run: uv sync --frozen
@@ -98,6 +102,8 @@ jobs:
 
     outputs:
       image-tag: ${{ steps.vars.outputs.image-tag }}
+      chart-version: ${{ steps.vars.outputs.chart-version }}
+      owner-lc: ${{ steps.vars.outputs.owner-lc }}
 
     permissions:
       contents: read
@@ -108,23 +114,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          registry: docker.io
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Compute image tag
+      - name: Compute build variables
         id: vars
         run: |
+          # Lowercase owner for OCI / Docker repository compatibility
+          OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "OWNER_LC=${OWNER_LC}" >> "$GITHUB_ENV"
+          echo "owner-lc=${OWNER_LC}" >> "$GITHUB_OUTPUT"
+
+          # Compute image tag
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             TAG="${GITHUB_REF##refs/tags/}"
           else
@@ -133,17 +131,38 @@ jobs:
           echo "IMAGE_TAG=${TAG}" >> "$GITHUB_ENV"
           echo "image-tag=${TAG}" >> "$GITHUB_OUTPUT"
 
+          # Extract chart version from Chart.yaml
+          CHART_VER=$(grep '^version:' helm/sre-bootcamp/Chart.yaml | awk '{print $2}' | tr -d '"'\''')
+          echo "CHART_VERSION=${CHART_VER}" >> "$GITHUB_ENV"
+          echo "chart-version=${CHART_VER}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub (Optional)
+        if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Build Docker image
         run: |
-          docker build \
-            -t docker.io/${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG} \
-            -t ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG} \
-            .
+          TAGS="-t ghcr.io/${OWNER_LC}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}"
+          if [[ -n "${{ secrets.DOCKERHUB_USERNAME }}" ]]; then
+            TAGS="${TAGS} -t docker.io/${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}"
+          fi
+          docker build ${TAGS} .
 
       - name: Trivy image scan (app image)
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: 'docker.io/${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.image-tag }}'
+          image-ref: 'ghcr.io/${{ steps.vars.outputs.owner-lc }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.image-tag }}'
           format: 'sarif'
           output: 'trivy-image-results.sarif'
 
@@ -153,11 +172,12 @@ jobs:
           sarif_file: 'trivy-image-results.sarif'
           category: 'trivy-image'
 
-      - name: Push image to Docker Hub
-        run: docker push docker.io/${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}
-
       - name: Push image to GHCR
-        run: docker push ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}
+        run: docker push ghcr.io/${OWNER_LC}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}
+
+      - name: Push image to Docker Hub (Optional)
+        if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+        run: docker push docker.io/${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}
 
       - name: Set up Helm
         uses: azure/setup-helm@v4
@@ -166,16 +186,20 @@ jobs:
 
       - name: Package and push Helm chart to GHCR
         run: |
-          helm registry login ghcr.io \
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io \
             --username ${{ github.actor }} \
-            --password ${{ secrets.GITHUB_TOKEN }}
+            --password-stdin
           helm package helm/sre-bootcamp
-          helm push sre-bootcamp-*.tgz oci://ghcr.io/${{ github.repository_owner }}/charts
+          helm push sre-bootcamp-${CHART_VERSION}.tgz oci://ghcr.io/${OWNER_LC}/charts
 
   deploy-k8s:
     needs: build-and-push
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/kubernetes' || github.ref == 'refs/heads/helm-setup'
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+
+    permissions:
+      contents: read
+      packages: read
 
     steps:
       - name: Deploy to Minikube cluster on EC2 via Helm
@@ -187,19 +211,23 @@ jobs:
           script: |
             set -e
 
-            # Validate kubectl connectivity
-            minikube kubectl -- cluster-info
+            OWNER_LC="${{ needs.build-and-push.outputs.owner-lc }}"
+            IMAGE_TAG="${{ needs.build-and-push.outputs.image-tag }}"
+            CHART_VERSION="${{ needs.build-and-push.outputs.chart-version }}"
 
-            # Install Helm if not present
+            # Validate cluster connectivity via minikube
+            minikube status -p sre-bootcamp || minikube status
+
+            # Ensure kubeconfig context is active for minikube
+            minikube update-context -p sre-bootcamp 2>/dev/null || minikube update-context 2>/dev/null || true
+            export KUBECONFIG="${HOME}/.kube/config"
+
+            # Install Helm on host if not already present
             if ! command -v helm &>/dev/null; then
               curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
             fi
 
-            # Point Helm at the minikube cluster
-            export KUBECONFIG="${HOME}/.kube/config"
-            kubectl config use-context minikube
-
-            # Ensure namespace exists before creating the secret
+            # Ensure namespace exists before configuring secrets
             minikube kubectl -- apply -f - <<'NSEOF'
             apiVersion: v1
             kind: Namespace
@@ -214,18 +242,34 @@ jobs:
               --from-literal=DB_PASSWORD='${{ secrets.DB_PASSWORD }}' \
               --dry-run=client -o yaml | minikube kubectl -- apply -f -
 
-            # Log Helm into GHCR so it can pull the chart
-            helm registry login ghcr.io \
-              --username ${{ github.actor }} \
-              --password ${{ secrets.GITHUB_TOKEN }}
+            # Create or update GHCR image pull secret to prevent ImagePullBackOff if repo is private
+            minikube kubectl -- -n sre-bootcamp create secret docker-registry ghcr-cred \
+              --docker-server=ghcr.io \
+              --docker-username='${{ github.actor }}' \
+              --docker-password='${{ secrets.GITHUB_TOKEN }}' \
+              --docker-email='bot@sre-bootcamp.local' \
+              --dry-run=client -o yaml | minikube kubectl -- apply -f -
 
-            # Pull and install/upgrade the chart from the OCI registry.
-            # --set web.image.tag pins the exact image built in this pipeline run.
-            IMAGE_TAG="${{ needs.build-and-push.outputs.image-tag }}"
+            # Attach ghcr-cred to the default service account so all pods can pull images
+            minikube kubectl -- -n sre-bootcamp patch serviceaccount default \
+              -p '{"imagePullSecrets": [{"name": "ghcr-cred"}]}' 2>/dev/null || true
+
+            # Authenticate Helm with GHCR OCI registry
+            echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io \
+              --username ${{ github.actor }} \
+              --password-stdin
+
+            # Deploy/Upgrade release via Helm OCI chart
             helm upgrade --install sre-bootcamp \
-              oci://ghcr.io/${{ github.repository_owner }}/charts/sre-bootcamp \
-              --version 0.1.0 \
+              oci://ghcr.io/${OWNER_LC}/charts/sre-bootcamp \
+              --version "${CHART_VERSION}" \
               --namespace sre-bootcamp \
+              --set web.image.repository="ghcr.io/${OWNER_LC}/${{ env.IMAGE_NAME }}" \
               --set web.image.tag="${IMAGE_TAG}" \
               --wait \
               --timeout=5m
+
+            # Post-deploy verification
+            minikube kubectl -- -n sre-bootcamp rollout status deployment/sre-bootcamp-web --timeout=120s
+            minikube kubectl -- -n sre-bootcamp rollout status deployment/nginx --timeout=120s
+            minikube kubectl -- -n sre-bootcamp get pods -o wide
